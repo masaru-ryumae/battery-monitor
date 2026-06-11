@@ -1,0 +1,7 @@
+#!/bin/bash
+# Battery Monitor startup script
+# Copy this file to run_monitor.sh and update the path to match your installation
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+exec "$SCRIPT_DIR/venv/bin/python" battery_monitor.py start --interval 60 --daemon
