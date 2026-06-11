@@ -572,11 +572,11 @@ class BatteryMonitor:
             if current_state == "low":
                 self.send_notification(
                     "Battery Low",
-                    f"Battery at {percent}%. Please connect charger."
+                    f"Battery at {percent}%. Please connect charger. Power is connected — turning on Kasa switch to start charging."
                 )
                 # Send Telegram alert
                 if self.enable_telegram:
-                    self.telegram.send_message(f"🔋 Battery Low: {percent}%\nPlease connect charger.")
+                    self.telegram.send_message(f"🔋 Battery Low: {percent}%\nPlease connect charger. Power is connected — attempting to turn on Kasa switch to start charging.")
 
                 # Turn on Kasa plug to charge devices
                 if self.enable_kasa:
@@ -600,11 +600,11 @@ class BatteryMonitor:
             elif current_state == "high":
                 self.send_notification(
                     "Battery Charged",
-                    f"Battery at {percent}%. Consider unplugging to preserve battery health."
+                    f"Battery at {percent}%. Consider unplugging to preserve battery health. Turning off Kasa switch."
                 )
                 # Send Telegram alert
                 if self.enable_telegram:
-                    self.telegram.send_message(f"⚡ Battery Charged: {percent}%\nConsider unplugging.")
+                    self.telegram.send_message(f"⚡ Battery Charged: {percent}%\nConsider unplugging to preserve battery health. Turning off Kasa switch.")
 
                 # Turn off Kasa plug when charging is done
                 if self.enable_kasa:
