@@ -50,8 +50,9 @@ battery_history.csv
 *.bak
 *.patch_part
 
-# Local scripts (never commit personal paths)
+# Local scripts and configs (never commit personal paths)
 run_monitor.sh
+com.user.batterymonitor.plist
 
 # OS
 .DS_Store

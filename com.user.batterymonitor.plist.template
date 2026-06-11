@@ -18,7 +18,7 @@
 	<string>com.user.batterymonitor</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Library/Developer/CommandLineTools/usr/bin/python3</string>
+		<string>/usr/bin/python3</string>
 		<string>/path/to/battery_monitor.py</string>
 		<string>start</string>
 		<string>--interval</string>
@@ -31,6 +31,6 @@
 	<key>StandardOutPath</key>
 	<string>/path/to/.battery_monitor/battery_monitor.out.log</string>
 	<key>WorkingDirectory</key>
-	<string>/path/to</string>
+	<string>/path/to/battery-monitor</string>
 </dict>
 </plist>
