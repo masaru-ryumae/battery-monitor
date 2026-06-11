@@ -129,23 +129,65 @@ class TelegramNotifier:
 
 
 class KasaPlugController:
-    """Control Kasa Smart Plug KP115 with retry logic for network resilience."""
+    """Control Kasa Smart Plug KP115 with persistent retry logic for network resilience."""
 
-    # Retry configuration - increased for better reliability
-    MAX_RETRIES = 5
-    BASE_DELAY = 3.0  # seconds
-    MAX_DELAY = 60.0  # seconds
+    # Retry configuration - persistent retrying with safety limits
+    # Phase 1: Fast retries (attempts 1-5) - quick recovery from transient blips
+    PHASE1_RETRIES = 5
+    PHASE1_BASE_DELAY = 2.0  # seconds
+    PHASE1_MAX_DELAY = 10.0  # seconds
+    
+    # Phase 2: Medium retries (attempts 6-15) - wait 30s between batches
+    PHASE2_RETRIES = 10
+    PHASE2_BATCH_SIZE = 5    # 5 attempts per batch
+    PHASE2_BATCH_DELAY = 30.0  # seconds between batches
+    PHASE2_BASE_DELAY = 5.0
+    PHASE2_MAX_DELAY = 30.0
+    
+    # Phase 3: Extended retries (attempt 16+) - limited max attempts, not infinite
+    PHASE3_MAX_ATTEMPTS = 30  # Additional attempts after Phase 2 (total ~45)
+    PHASE3_BATCH_SIZE = 3
+    PHASE3_BATCH_DELAY = 60.0  # seconds between batches
+    PHASE3_BASE_DELAY = 10.0
+    PHASE3_MAX_DELAY = 60.0
+    
+    # Overall max time to keep trying (0 = use MAX_TOTAL_TIME_DEFAULT)
+    MAX_TOTAL_TIME = 0  # seconds, 0 = use default
+    MAX_TOTAL_TIME_DEFAULT = 300  # 5 minutes default max
+    
     PING_TIMEOUT = 2.0  # seconds for ping pre-check
 
-    def __init__(self, ip: str, username: str = None, password: str = None):
+    def __init__(self, ip: str, username: str = None, password: str = None,
+                 phase1_retries: int = None, phase2_retries: int = None,
+                 phase3_max_attempts: int = None, max_total_time: int = None,
+                 phase1_base_delay: float = None, phase2_base_delay: float = None,
+                 phase3_base_delay: float = None, ping_timeout: float = None):
         self.ip = ip
         self.username = username
         self.password = password
+        # Override class defaults if provided
+        if phase1_retries is not None:
+            self.PHASE1_RETRIES = phase1_retries
+        if phase2_retries is not None:
+            self.PHASE2_RETRIES = phase2_retries
+        if phase3_max_attempts is not None:
+            self.PHASE3_MAX_ATTEMPTS = phase3_max_attempts
+        if max_total_time is not None:
+            self.MAX_TOTAL_TIME = max_total_time
+        if phase1_base_delay is not None:
+            self.PHASE1_BASE_DELAY = phase1_base_delay
+        if phase2_base_delay is not None:
+            self.PHASE2_BASE_DELAY = phase2_base_delay
+        if phase3_base_delay is not None:
+            self.PHASE3_BASE_DELAY = phase3_base_delay
+        if ping_timeout is not None:
+            self.PING_TIMEOUT = ping_timeout
         # No connection caching — each asyncio.run() creates a new event loop
         # Caching across event loops causes "No route to host" errors
 
     async def _ping_check(self) -> bool:
         """Pre-flight ping check to verify host reachability before TCP connection."""
+        result = None
         try:
             result = await asyncio.create_subprocess_exec(
                 "ping", "-c", "1", "-W", str(int(self.PING_TIMEOUT * 1000)), self.ip,
@@ -154,6 +196,14 @@ class KasaPlugController:
             )
             await asyncio.wait_for(result.wait(), timeout=self.PING_TIMEOUT + 1)
             return result.returncode == 0
+        except asyncio.TimeoutError:
+            if result:
+                try:
+                    result.kill()
+                    await result.wait()
+                except Exception:
+                    pass
+            return False
         except Exception:
             return False
 
@@ -171,34 +221,123 @@ class KasaPlugController:
             plug = SmartPlug(self.ip)
             await plug.update()
             return plug
-        except Exception as e:
+        except (OSError, ConnectionError, asyncio.TimeoutError) as e:
             print(f"Error connecting to Kasa plug at {self.ip}: {e}", file=sys.stderr)
+            return None
+        except Exception as e:
+            # Log unexpected errors but don't crash
+            print(f"Unexpected error connecting to Kasa plug at {self.ip}: {type(e).__name__}: {e}", file=sys.stderr)
             return None
 
     async def _execute_with_retry(self, operation, *args, **kwargs) -> bool:
-        """Execute an async operation with exponential backoff retry."""
+        """Execute an async operation with persistent multi-phase retry logic.
+        
+        Returns True on success, False on failure after all retries exhausted.
+        """
+        import random
         last_exception = None
+        start_time = time.time()
+        total_attempts = 0
+        max_total_time = self.MAX_TOTAL_TIME if self.MAX_TOTAL_TIME > 0 else self.MAX_TOTAL_TIME_DEFAULT
+        
+        def _print_status(phase: str, attempt: int, delay: float, error: Exception):
+            print(f"Kasa {phase} (attempt {total_attempts}): {type(error).__name__}: {error}. Retrying in {delay:.1f}s...", file=sys.stderr)
 
-        for attempt in range(self.MAX_RETRIES):
+        def _check_time_limit() -> bool:
+            if max_total_time and (time.time() - start_time) > max_total_time:
+                print(f"Kasa retry time limit exceeded ({max_total_time}s), stopping", file=sys.stderr)
+                return True
+            return False
+
+        # Phase 1: Fast retries for transient issues
+        for attempt in range(self.PHASE1_RETRIES):
+            total_attempts += 1
             try:
                 result = await operation(*args, **kwargs)
-                if result:
+                if result is True:
+                    if total_attempts > 1:
+                        print(f"Kasa operation succeeded after {total_attempts} attempts", file=sys.stderr)
                     return True
-                # If operation returned False (not exception), don't retry
+                # Explicit False return = don't retry
                 return False
-            except Exception as e:
+            except (OSError, ConnectionError, asyncio.TimeoutError, RuntimeError) as e:
                 last_exception = e
-                if attempt < self.MAX_RETRIES - 1:
-                    delay = min(self.BASE_DELAY * (2 ** attempt), self.MAX_DELAY)
-                    print(f"Kasa operation failed (attempt {attempt + 1}/{self.MAX_RETRIES}): {e}. Retrying in {delay:.1f}s...", file=sys.stderr)
-                    await asyncio.sleep(delay)
-                else:
-                    print(f"Kasa operation failed after {self.MAX_RETRIES} attempts: {e}", file=sys.stderr)
+                if _check_time_limit():
+                    break
+                delay = min(self.PHASE1_BASE_DELAY * (2 ** attempt), self.PHASE1_MAX_DELAY)
+                # Add jitter (±25%) to prevent thundering herd
+                delay *= (0.75 + random.random() * 0.5)
+                _print_status("Phase 1 - fast retry", attempt, delay, e)
+                await asyncio.sleep(delay)
 
+        # Phase 2: Medium retries with 30s batch delays
+        phase2_batches = (self.PHASE2_RETRIES + self.PHASE2_BATCH_SIZE - 1) // self.PHASE2_BATCH_SIZE
+        for batch in range(phase2_batches):
+            for attempt in range(self.PHASE2_BATCH_SIZE):
+                if batch * self.PHASE2_BATCH_SIZE + attempt >= self.PHASE2_RETRIES:
+                    break
+                total_attempts += 1
+                try:
+                    result = await operation(*args, **kwargs)
+                    if result is True:
+                        print(f"Kasa operation succeeded after {total_attempts} attempts (Phase 2)", file=sys.stderr)
+                        return True
+                    return False
+                except (OSError, ConnectionError, asyncio.TimeoutError, RuntimeError) as e:
+                    last_exception = e
+                    if _check_time_limit():
+                        break
+                    delay = min(self.PHASE2_BASE_DELAY * (2 ** attempt), self.PHASE2_MAX_DELAY)
+                    delay *= (0.75 + random.random() * 0.5)
+                    _print_status("Phase 2 - medium retry", attempt, delay, e)
+                    await asyncio.sleep(delay)
+            
+            # Wait between batches (30s)
+            if batch < phase2_batches - 1:
+                if _check_time_limit():
+                    break
+                print(f"Kasa Phase 2 batch {batch + 1} complete, waiting {self.PHASE2_BATCH_DELAY}s before next batch...", file=sys.stderr)
+                await asyncio.sleep(self.PHASE2_BATCH_DELAY)
+
+        # Phase 3: Extended retries with max attempt limit (not infinite)
+        phase3_attempts = 0
+        while phase3_attempts < self.PHASE3_MAX_ATTEMPTS:
+            if _check_time_limit():
+                break
+                
+            phase3_batch = (phase3_attempts // self.PHASE3_BATCH_SIZE) + 1
+            for attempt in range(self.PHASE3_BATCH_SIZE):
+                if phase3_attempts >= self.PHASE3_MAX_ATTEMPTS:
+                    break
+                total_attempts += 1
+                phase3_attempts += 1
+                try:
+                    result = await operation(*args, **kwargs)
+                    if result is True:
+                        print(f"Kasa operation succeeded after {total_attempts} attempts (Phase 3, batch {phase3_batch})", file=sys.stderr)
+                        return True
+                    return False
+                except (OSError, ConnectionError, asyncio.TimeoutError, RuntimeError) as e:
+                    last_exception = e
+                    if _check_time_limit():
+                        break
+                    delay = min(self.PHASE3_BASE_DELAY * (2 ** attempt), self.PHASE3_MAX_DELAY)
+                    delay *= (0.75 + random.random() * 0.5)
+                    _print_status("Phase 3 - extended retry", attempt, delay, e)
+                    await asyncio.sleep(delay)
+            
+            # Wait between batches (60s)
+            if phase3_attempts < self.PHASE3_MAX_ATTEMPTS:
+                if _check_time_limit():
+                    break
+                print(f"Kasa Phase 3 batch {phase3_batch} complete, waiting {self.PHASE3_BATCH_DELAY}s before next batch... (attempts: {phase3_attempts}/{self.PHASE3_MAX_ATTEMPTS}, elapsed: {time.time() - start_time:.0f}s)", file=sys.stderr)
+                await asyncio.sleep(self.PHASE3_BATCH_DELAY)
+
+        print(f"Kasa operation failed after {total_attempts} attempts over {time.time() - start_time:.0f}s: {last_exception}", file=sys.stderr)
         return False
 
     async def turn_on(self) -> bool:
-        """Turn on the plug with retry logic."""
+        """Turn on the plug with persistent retry logic."""
         if not HAS_KASA:
             print("Error: kasa library not installed. Install with: pip install python-kasa", file=sys.stderr)
             return False
@@ -206,14 +345,14 @@ class KasaPlugController:
         async def _turn_on():
             plug = await self._get_plug()
             if not plug:
-                return False
+                raise ConnectionError("Failed to establish connection to Kasa plug")
             await plug.turn_on()
             return True
 
         return await self._execute_with_retry(_turn_on)
 
     async def turn_off(self) -> bool:
-        """Turn off the plug with retry logic."""
+        """Turn off the plug with persistent retry logic."""
         if not HAS_KASA:
             print("Error: kasa library not installed. Install with: pip install python-kasa", file=sys.stderr)
             return False
@@ -221,14 +360,18 @@ class KasaPlugController:
         async def _turn_off():
             plug = await self._get_plug()
             if not plug:
-                return False
+                raise ConnectionError("Failed to establish connection to Kasa plug")
             await plug.turn_off()
             return True
 
         return await self._execute_with_retry(_turn_off)
 
     async def get_state(self) -> Optional[bool]:
-        """Get current plug state (True=on, False=off) with retry logic."""
+        """Get current plug state (True=on, False=off) with retry logic.
+        
+        Returns:
+            True if plug is on, False if off, None if unreachable/unknown
+        """
         if not HAS_KASA:
             return None
 
@@ -239,8 +382,26 @@ class KasaPlugController:
             await plug.update()
             return plug.is_on
 
-        # For get_state, we want to return the actual state, not just bool
-        return await self._execute_with_retry(_get_state)
+        # Execute with retry, but return actual state (not success boolean)
+        start_time = time.time()
+        max_total_time = self.MAX_TOTAL_TIME if self.MAX_TOTAL_TIME > 0 else self.MAX_TOTAL_TIME_DEFAULT
+        
+        for attempt in range(self.PHASE1_RETRIES + self.PHASE2_RETRIES):
+            try:
+                result = await _get_state()
+                if result is not None:
+                    return result
+            except (OSError, ConnectionError, asyncio.TimeoutError, RuntimeError) as e:
+                if attempt == 0:
+                    print(f"Kasa get_state attempt {attempt + 1}: {type(e).__name__}: {e}", file=sys.stderr)
+                delay = min(self.PHASE1_BASE_DELAY * (2 ** min(attempt, 4)), self.PHASE1_MAX_DELAY)
+                delay *= (0.75 + random.random() * 0.5)
+                await asyncio.sleep(delay)
+            
+            if max_total_time and (time.time() - start_time) > max_total_time:
+                break
+        
+        return None
 
 
 class EcoFlowController:
