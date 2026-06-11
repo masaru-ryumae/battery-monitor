@@ -50,6 +50,9 @@ battery_history.csv
 *.bak
 *.patch_part
 
+# Local scripts (never commit personal paths)
+run_monitor.sh
+
 # OS
 .DS_Store
 Thumbs.db
