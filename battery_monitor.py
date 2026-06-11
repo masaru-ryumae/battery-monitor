@@ -144,15 +144,15 @@ class KasaPlugController:
         # No connection caching — each asyncio.run() creates a new event loop
         # Caching across event loops causes "No route to host" errors
 
-    def _ping_check(self) -> bool:
+    async def _ping_check(self) -> bool:
         """Pre-flight ping check to verify host reachability before TCP connection."""
         try:
-            import subprocess
-            result = subprocess.run(
-                ["ping", "-c", "1", "-W", str(int(self.PING_TIMEOUT * 1000)), self.ip],
-                capture_output=True,
-                timeout=self.PING_TIMEOUT + 1
+            result = await asyncio.create_subprocess_exec(
+                "ping", "-c", "1", "-W", str(int(self.PING_TIMEOUT * 1000)), self.ip,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
             )
+            await asyncio.wait_for(result.wait(), timeout=self.PING_TIMEOUT + 1)
             return result.returncode == 0
         except Exception:
             return False
@@ -163,7 +163,7 @@ class KasaPlugController:
             return None
 
         # Pre-flight ping check
-        if not self._ping_check():
+        if not await self._ping_check():
             print(f"Kasa plug at {self.ip} not reachable (ping failed)", file=sys.stderr)
             return None
 
@@ -192,9 +192,6 @@ class KasaPlugController:
                     delay = min(self.BASE_DELAY * (2 ** attempt), self.MAX_DELAY)
                     print(f"Kasa operation failed (attempt {attempt + 1}/{self.MAX_RETRIES}): {e}. Retrying in {delay:.1f}s...", file=sys.stderr)
                     await asyncio.sleep(delay)
-                    # Force reconnection on next attempt
-                    self._plug_connected = False
-                    self._plug = None
                 else:
                     print(f"Kasa operation failed after {self.MAX_RETRIES} attempts: {e}", file=sys.stderr)
 
