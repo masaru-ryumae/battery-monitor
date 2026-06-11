@@ -131,42 +131,48 @@ class TelegramNotifier:
 class KasaPlugController:
     """Control Kasa Smart Plug KP115 with retry logic for network resilience."""
 
-    # Retry configuration
-    MAX_RETRIES = 3
-    BASE_DELAY = 2.0  # seconds
-    MAX_DELAY = 30.0  # seconds
+    # Retry configuration - increased for better reliability
+    MAX_RETRIES = 5
+    BASE_DELAY = 3.0  # seconds
+    MAX_DELAY = 60.0  # seconds
+    PING_TIMEOUT = 2.0  # seconds for ping pre-check
 
     def __init__(self, ip: str, username: str = None, password: str = None):
         self.ip = ip
         self.username = username
         self.password = password
-        self._plug = None
-        self._plug_connected = False
+        # No connection caching — each asyncio.run() creates a new event loop
+        # Caching across event loops causes "No route to host" errors
+
+    def _ping_check(self) -> bool:
+        """Pre-flight ping check to verify host reachability before TCP connection."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["ping", "-c", "1", "-W", str(int(self.PING_TIMEOUT * 1000)), self.ip],
+                capture_output=True,
+                timeout=self.PING_TIMEOUT + 1
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
 
     async def _get_plug(self) -> Optional[SmartPlug]:
-        """Get or create a cached plug connection."""
+        """Create a fresh plug connection for the current event loop."""
         if not HAS_KASA:
             return None
 
-        if self._plug and self._plug_connected:
-            try:
-                # Test if connection is still alive
-                await self._plug.update()
-                return self._plug
-            except Exception:
-                self._plug_connected = False
-                self._plug = None
+        # Pre-flight ping check
+        if not self._ping_check():
+            print(f"Kasa plug at {self.ip} not reachable (ping failed)", file=sys.stderr)
+            return None
 
-        # Create new connection
         try:
-            self._plug = SmartPlug(self.ip)
-            await self._plug.update()
-            self._plug_connected = True
-            return self._plug
+            plug = SmartPlug(self.ip)
+            await plug.update()
+            return plug
         except Exception as e:
             print(f"Error connecting to Kasa plug at {self.ip}: {e}", file=sys.stderr)
-            self._plug = None
-            self._plug_connected = False
             return None
 
     async def _execute_with_retry(self, operation, *args, **kwargs) -> bool:
