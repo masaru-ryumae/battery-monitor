@@ -54,6 +54,9 @@ battery_history.csv
 run_monitor.sh
 com.user.batterymonitor.plist
 
+# Claude Code local documentation (for development workflow only)
+CLAUDE.md
+
 # OS
 .DS_Store
 Thumbs.db
