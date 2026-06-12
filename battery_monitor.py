@@ -189,8 +189,9 @@ class KasaPlugController:
         """Pre-flight ping check to verify host reachability before TCP connection."""
         result = None
         try:
+            # Absolute path: the LaunchAgent PATH does not include /sbin
             result = await asyncio.create_subprocess_exec(
-                "ping", "-c", "1", "-W", str(int(self.PING_TIMEOUT * 1000)), self.ip,
+                "/sbin/ping", "-c", "1", "-W", str(int(self.PING_TIMEOUT * 1000)), self.ip,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL
             )
@@ -204,7 +205,8 @@ class KasaPlugController:
                 except Exception:
                     pass
             return False
-        except Exception:
+        except Exception as e:
+            print(f"Kasa ping pre-check error: {type(e).__name__}: {e}", file=sys.stderr)
             return False
 
     async def _get_plug(self) -> Optional[SmartPlug]:
