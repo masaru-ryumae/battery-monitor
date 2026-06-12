@@ -46,7 +46,7 @@ except ImportError:
     HAS_REQUESTS = False
 
 try:
-    from kasa import SmartPlug
+    from kasa.iot import IotPlug
     HAS_KASA = True
 except ImportError:
     HAS_KASA = False
@@ -209,7 +209,7 @@ class KasaPlugController:
             print(f"Kasa ping pre-check error: {type(e).__name__}: {e}", file=sys.stderr)
             return False
 
-    async def _get_plug(self) -> Optional[SmartPlug]:
+    async def _get_plug(self) -> Optional[IotPlug]:
         """Create a fresh plug connection for the current event loop."""
         if not HAS_KASA:
             return None
@@ -220,7 +220,7 @@ class KasaPlugController:
             return None
 
         try:
-            plug = SmartPlug(self.ip)
+            plug = IotPlug(self.ip)
             await plug.update()
             return plug
         except (OSError, ConnectionError, asyncio.TimeoutError) as e:
@@ -718,7 +718,7 @@ def get_launch_agent_plist(script_path: Path, check_interval: int) -> dict:
         "StandardErrorPath": str(DATA_DIR / "battery_monitor.err.log"),
         "WorkingDirectory": str(SCRIPT_DIR),
         "EnvironmentVariables": {
-            "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+            "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
         }
     }
 

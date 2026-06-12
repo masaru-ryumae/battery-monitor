@@ -244,7 +244,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - Built with Python 3.8+
-- Uses [python-kasa](https://github.com/jsimonetti/python-kasa) for Kasa device control
+- Uses [python-kasa](https://github.com/python-kasa/python-kasa) for Kasa device control
 - Uses [paho-mqtt](https://github.com/eclipse/paho.mqtt.python) for MQTT/EcoFlow integration
 
 ## Support
