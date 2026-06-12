@@ -231,16 +231,24 @@ class KasaPlugController:
             print(f"Unexpected error connecting to Kasa plug at {self.ip}: {type(e).__name__}: {e}", file=sys.stderr)
             return None
 
-    async def _execute_with_retry(self, operation, *args, **kwargs) -> bool:
+    async def _execute_with_retry(self, operation, *args, quick: bool = False, **kwargs) -> bool:
         """Execute an async operation with persistent multi-phase retry logic.
-        
+
+        quick=True bounds the work to 2 fast attempts (30s cap, no phase 2/3) —
+        used for per-tick retries so a dead plug cannot stall the monitor loop.
+
         Returns True on success, False on failure after all retries exhausted.
         """
         import random
         last_exception = None
         start_time = time.time()
         total_attempts = 0
-        max_total_time = self.MAX_TOTAL_TIME if self.MAX_TOTAL_TIME > 0 else self.MAX_TOTAL_TIME_DEFAULT
+        if quick:
+            max_total_time = 30
+            phase1_retries = 2
+        else:
+            max_total_time = self.MAX_TOTAL_TIME if self.MAX_TOTAL_TIME > 0 else self.MAX_TOTAL_TIME_DEFAULT
+            phase1_retries = self.PHASE1_RETRIES
         
         def _print_status(phase: str, attempt: int, delay: float, error: Exception):
             print(f"Kasa {phase} (attempt {total_attempts}): {type(error).__name__}: {error}. Retrying in {delay:.1f}s...", file=sys.stderr)
@@ -252,7 +260,7 @@ class KasaPlugController:
             return False
 
         # Phase 1: Fast retries for transient issues
-        for attempt in range(self.PHASE1_RETRIES):
+        for attempt in range(phase1_retries):
             total_attempts += 1
             try:
                 result = await operation(*args, **kwargs)
@@ -271,6 +279,10 @@ class KasaPlugController:
                 delay *= (0.75 + random.random() * 0.5)
                 _print_status("Phase 1 - fast retry", attempt, delay, e)
                 await asyncio.sleep(delay)
+
+        if quick:
+            print(f"Kasa quick attempt failed after {total_attempts} attempts: {last_exception}", file=sys.stderr)
+            return False
 
         # Phase 2: Medium retries with 30s batch delays
         phase2_batches = (self.PHASE2_RETRIES + self.PHASE2_BATCH_SIZE - 1) // self.PHASE2_BATCH_SIZE
@@ -338,7 +350,7 @@ class KasaPlugController:
         print(f"Kasa operation failed after {total_attempts} attempts over {time.time() - start_time:.0f}s: {last_exception}", file=sys.stderr)
         return False
 
-    async def turn_on(self) -> bool:
+    async def turn_on(self, quick: bool = False) -> bool:
         """Turn on the plug with persistent retry logic."""
         if not HAS_KASA:
             print("Error: kasa library not installed. Install with: pip install python-kasa", file=sys.stderr)
@@ -351,7 +363,7 @@ class KasaPlugController:
             await plug.turn_on()
             return True
 
-        return await self._execute_with_retry(_turn_on)
+        return await self._execute_with_retry(_turn_on, quick=quick)
 
     async def turn_off(self) -> bool:
         """Turn off the plug with persistent retry logic."""
@@ -602,6 +614,15 @@ class BatteryMonitor:
                             self._kasa_retry_pending = True
                     except Exception as e:
                         print(f"Error controlling Kasa plug: {e}", file=sys.stderr)
+                        self.send_notification(
+                            "Kasa Plug Failed",
+                            f"Error turning on charging plug at {percent}% battery: {e}"
+                        )
+                        if self.enable_telegram:
+                            self.telegram.send_message(
+                                f"⚠️ Kasa Plug Failed: error turning on charging plug at {percent}% battery "
+                                f"({type(e).__name__}). Will keep retrying every {self.check_interval}s while battery is low."
+                            )
                         self._kasa_retry_pending = True
 
                 # Enable EcoFlow DC port
@@ -644,9 +665,10 @@ class BatteryMonitor:
 
         elif current_state == "low" and self._kasa_retry_pending and self.enable_kasa:
             # A previous low-battery turn-on failed; keep retrying every tick
-            # until it succeeds or the battery leaves the low state.
+            # until it succeeds or the battery leaves the low state. quick=True
+            # bounds each retry so a dead plug cannot stall the monitor loop.
             try:
-                success = asyncio.run(self.kasa.turn_on())
+                success = asyncio.run(self.kasa.turn_on(quick=True))
                 if success:
                     print(f"Kasa plug turned ON (low battery, retry)")
                     self._kasa_retry_pending = False
