@@ -472,6 +472,7 @@ class BatteryMonitor:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._last_notification_state = None
+        self._kasa_retry_pending = False
 
         # Smart device integrations
         self.enable_telegram = enable_telegram and TELEGRAM_BOT_TOKEN and "..." not in TELEGRAM_BOT_TOKEN
@@ -586,14 +587,22 @@ class BatteryMonitor:
                         success = asyncio.run(self.kasa.turn_on())
                         if success:
                             print(f"Kasa plug turned ON (low battery)")
+                            self._kasa_retry_pending = False
                         else:
                             print(f"Failed to turn ON Kasa plug after retries", file=sys.stderr)
                             self.send_notification(
                                 "Kasa Plug Failed",
                                 f"Could not turn on charging plug at {percent}% battery"
                             )
+                            if self.enable_telegram:
+                                self.telegram.send_message(
+                                    f"⚠️ Kasa Plug Failed: could not turn on charging plug at {percent}% battery. "
+                                    f"Will keep retrying every {self.check_interval}s while battery is low."
+                                )
+                            self._kasa_retry_pending = True
                     except Exception as e:
                         print(f"Error controlling Kasa plug: {e}", file=sys.stderr)
+                        self._kasa_retry_pending = True
 
                 # Enable EcoFlow DC port
                 if self.enable_ecoflow:
@@ -620,6 +629,10 @@ class BatteryMonitor:
                                 "Kasa Plug Failed",
                                 f"Could not turn off charging plug at {percent}% battery"
                             )
+                            if self.enable_telegram:
+                                self.telegram.send_message(
+                                    f"⚠️ Kasa Plug Failed: could not turn off charging plug at {percent}% battery."
+                                )
                     except Exception as e:
                         print(f"Error controlling Kasa plug: {e}", file=sys.stderr)
 
@@ -628,6 +641,26 @@ class BatteryMonitor:
                     self.ecoflow.set_dc_port(enabled=False)
 
             self._last_notification_state = current_state
+
+        elif current_state == "low" and self._kasa_retry_pending and self.enable_kasa:
+            # A previous low-battery turn-on failed; keep retrying every tick
+            # until it succeeds or the battery leaves the low state.
+            try:
+                success = asyncio.run(self.kasa.turn_on())
+                if success:
+                    print(f"Kasa plug turned ON (low battery, retry)")
+                    self._kasa_retry_pending = False
+                    if self.enable_telegram:
+                        self.telegram.send_message(
+                            f"✅ Kasa plug turned ON after retry at {percent}% battery."
+                        )
+                else:
+                    print(f"Kasa plug retry failed, will retry next check", file=sys.stderr)
+            except Exception as e:
+                print(f"Error controlling Kasa plug (retry): {e}", file=sys.stderr)
+
+        if current_state != "low":
+            self._kasa_retry_pending = False
 
     def monitor_loop(self) -> None:
         """Main monitoring loop."""

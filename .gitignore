@@ -56,6 +56,7 @@ com.user.batterymonitor.plist
 
 # Claude Code local documentation (for development workflow only)
 CLAUDE.md
+.claude/
 
 # OS
 .DS_Store
